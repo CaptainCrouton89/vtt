@@ -19,6 +19,7 @@ local isRecording = false
 local recordingProcess = nil
 local recordingTimer = nil
 local statusMenubar = nil
+local useGPT5 = false -- Track if Shift was held during recording
 
 -- Initialize menubar indicator
 function vtt.initMenubar()
@@ -29,7 +30,7 @@ function vtt.initMenubar()
         statusMenubar:setMenu({
             {title = "Voice-to-Text Status: Ready", disabled = true},
             {title = "-"},
-            {title = "Hotkey: ⌥` (hold)", disabled = true},
+            {title = "Hotkeys: ⌥` (Mistral), ⇧⌥` (GPT-5)", disabled = true},
             {title = "Reload Config", fn = function() hs.reload() end}
         })
     end
@@ -45,7 +46,7 @@ function vtt.updateMenubar(status, color)
         local menu = {
             {title = "Voice-to-Text Status: " .. (status or "Ready"), disabled = true},
             {title = "-"},
-            {title = "Hotkey: ⌥` (hold)", disabled = true},
+            {title = "Hotkeys: ⌥` (Mistral), ⇧⌥` (GPT-5)", disabled = true},
             {title = "Reload Config", fn = function() hs.reload() end}
         }
         statusMenubar:setMenu(menu)
@@ -67,30 +68,39 @@ function vtt.showNotification(title, message, duration)
 end
 
 -- Start recording
-function vtt.startRecording()
+function vtt.startRecording(forceGPT5)
     if isRecording then return end
     
-    print("Starting voice recording...")
+    useGPT5 = forceGPT5 or false
+    
+    print("Starting voice recording..." .. (useGPT5 and " (with GPT-5)" or " (with Mistral)"))
     isRecording = true
     
     -- Update UI
     vtt.updateMenubar("recording")
     
-    -- Remove any existing audio file
-    os.execute("rm -f " .. config.audioFile)
+    -- Don't remove existing audio file to avoid breaking recording
     
-    -- Build ffmpeg command for recording
+    -- Build ffmpeg command with full path and overwrite flag
     local ffmpegCmd = string.format(
-        'ffmpeg -f avfoundation -i ":1" -ar %d -ac %d -t %d "%s" > /dev/null 2>&1 &',
+        'export PATH="/usr/local/bin:$PATH" && /usr/local/bin/ffmpeg -y -f avfoundation -i ":1" -ar %d -ac %d -t %d "%s"',
         config.sampleRate,
         config.channels,
         config.maxDuration,
         config.audioFile
     )
     
+    print("FFmpeg command:", ffmpegCmd)
+    
     -- Start recording process
     recordingProcess = hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
         print("Recording process finished with exit code:", exitCode)
+        if stdOut and stdOut:len() > 0 then
+            print("FFmpeg stdout:", stdOut)
+        end
+        if stdErr and stdErr:len() > 0 then
+            print("FFmpeg stderr:", stdErr)
+        end
     end, {"-c", ffmpegCmd})
     
     if recordingProcess then
@@ -147,9 +157,10 @@ function vtt.processAudio()
     
     print("Audio file size:", fileExists.size, "bytes")
     
-    -- Call transcription script
-    local transcribeCmd = string.format('cd "%s" && node transcribe.js "%s"', 
-                                      hs.configdir .. "/vtt", config.audioFile)
+    -- Call transcription script with GPT-5 flag if needed (with full node path and env vars)
+    local gptFlag = useGPT5 and "--gpt5" or ""
+    local transcribeCmd = string.format('source ~/.zshenv && export PATH="/opt/homebrew/bin:$PATH" && cd "%s" && /opt/homebrew/bin/node transcribe.js %s "%s"', 
+                                      hs.configdir .. "/vtt", gptFlag, config.audioFile)
     
     hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
         print("Transcription finished with exit code:", exitCode)
@@ -196,14 +207,14 @@ end
 function vtt.resetState()
     isRecording = false
     recordingProcess = nil
+    useGPT5 = false -- Reset GPT-5 flag
     
     if recordingTimer then
         recordingTimer:stop()
         recordingTimer = nil
     end
     
-    -- Clean up audio file (disabled for debugging)
-    -- os.execute("rm -f " .. config.audioFile)
+    -- Don't clean up audio file as it breaks recording
     
     -- Update UI
     vtt.updateMenubar("ready")
@@ -216,14 +227,21 @@ function vtt.init()
     -- Initialize menubar
     vtt.initMenubar()
     
-    -- Set up global hotkey (press and hold)
+    -- Set up global hotkey (press and hold) - regular mode
     hs.hotkey.bind(config.hotkey, config.key, 
-        function() vtt.startRecording() end,  -- Key down
-        function() vtt.stopRecording() end,   -- Key up
-        function() vtt.startRecording() end   -- Key repeat (optional)
+        function() vtt.startRecording(false) end,  -- Key down
+        function() vtt.stopRecording() end,        -- Key up
+        function() vtt.startRecording(false) end   -- Key repeat (optional)
     )
     
-    print("Voice-to-Text initialized. Hotkey: Option+` (hold)")
+    -- Set up global hotkey (press and hold) - GPT-5 mode with Shift+Alt+`
+    hs.hotkey.bind({"shift", "alt"}, config.key, 
+        function() vtt.startRecording(true) end,   -- Key down
+        function() vtt.stopRecording() end,        -- Key up
+        function() vtt.startRecording(true) end    -- Key repeat (optional)
+    )
+    
+    print("Voice-to-Text initialized. Hotkeys: Option+` (Mistral), Shift+Option+` (GPT-5)")
 end
 
 -- Start the module

@@ -78,25 +78,30 @@ async function transcribeAudio(audioFilePath) {
   }
 }
 
-async function cleanupText(rawText) {
+async function cleanupText(rawText, useGPT5 = false) {
   try {
-    console.error("Cleaning up text with GPT-4...");
+    const model = useGPT5 ? "gpt-5-mini" : "gpt-5-nano";
+    const systemPrompt = useGPT5
+      ? "You are a helpful assistant who gives brief, information dense answers."
+      : "You are a text cleanup assistant. Remove filler words (um, uh, like, you know, etc.), fix grammar, improve readability, and format the text nicely while preserving the original meaning and tone. Keep the text concise but natural. Do not add content that wasn't in the original text. Respond with only the cleaned text.";
+
+    console.error(`Cleaning up text with ${model}...`);
 
     const response = await openaiClient.chat.completions.create({
-      model: "gpt-5-nano",
+      model: model,
       messages: [
         {
           role: "system",
-          content:
-            "You are a text cleanup assistant. Remove filler words (um, uh, like, you know, etc.), fix grammar, improve readability, and format the text nicely while preserving the original meaning and tone. Keep the text concise but natural. Do not add content that wasn't in the original text. Respond with only the cleaned text.",
+          content: systemPrompt,
         },
         {
           role: "user",
-          content: `Please clean up and format this transcribed text:\n\n${rawText}`,
+          content: useGPT5
+            ? rawText
+            : `Please clean up and format this transcribed text:\n\n${rawText}`,
         },
       ],
-      max_tokens: 1000,
-      temperature: 0.3,
+      temperature: useGPT5 ? 1 : 0.3,
     });
 
     const cleanedText = response.choices[0]?.message?.content || rawText;
@@ -126,16 +131,19 @@ function getAudioMimeType(filePath) {
 
 // Main execution
 async function main() {
-  const audioFilePath = process.argv[2];
+  // Parse command line arguments
+  const args = process.argv.slice(2);
+  const useGPT5 = args.includes("--gpt5");
+  const audioFilePath = args.find((arg) => !arg.startsWith("--"));
 
   if (!audioFilePath) {
-    console.error("Usage: node transcribe.js <audio-file-path>");
+    console.error("Usage: node transcribe.js [--gpt5] <audio-file-path>");
     process.exit(1);
   }
 
   try {
     const transcription = await transcribeAudio(audioFilePath);
-    const cleanedText = await cleanupText(transcription);
+    const cleanedText = await cleanupText(transcription, useGPT5);
 
     // Output only the cleaned text to stdout (for piping)
     console.log(cleanedText);
